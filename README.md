@@ -7,4 +7,5 @@ Do badania wybrano następujące kryptowaluty:
 - Polimath
 - Monero
 - KuCoin
+
 Dane wykorzystane w projekcie pochodzą ze strony https://coinmarketcap.com.
