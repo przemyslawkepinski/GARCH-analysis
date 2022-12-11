@@ -1,0 +1,571 @@
+library('rvest')
+library(readr)
+library('XML')
+library("RCurl")
+library('rvest')
+library('data.table')
+library('xts')
+library('dygraphs')
+library('htmltools')
+library('car')
+library('FinTS')
+library('fGarch')
+library('tseries')
+library('moments')
+library('rugarch')
+
+source("functions08.R")
+
+setwd("D:\\WNE\\I rok Magisterka\\ZASC\\zasc_project")
+bnb <- read_csv("bnb1.csv")
+polymath <- read_csv("polymath.csv")
+monero <- read_csv("monero.csv")
+kucoin <- read_csv("kucoin.csv")
+View(bnb)
+
+# extracting last row from the data frame
+
+bnb20 = tail(bnb, n = 899)
+polymath20 = tail(polymath, n = 899)
+monero20 = tail(monero, n = 899)
+kucoin20 = tail(kucoin, n = 899)
+
+#zmiana formatu daty
+
+bnb20$Date <- format(as.POSIXlt(bnb20$snapped_at), format = "%Y-%m-%d")
+polymath20$Date <- format(as.POSIXlt(polymath20$snapped_at), format = "%Y-%m-%d")
+monero20$Date <- format(as.POSIXlt(monero20$snapped_at), format = "%Y-%m-%d")
+kucoin20$Date <- format(as.POSIXlt(kucoin20$snapped_at), format = "%Y-%m-%d")
+View(bnb)
+
+#pozostawienie interesuj?cych nas kolumn
+
+bnb20 <- bnb20[c(2,3,5)]
+polymath20 <- polymath20[c(2,3,5)]
+monero20 <- monero20[c(2,3,5)]
+kucoin20 <- kucoin20[c(2,3,5)]
+
+
+# zmiana nazw kolumn
+colnames(bnb20) <- c("BNB_price", "BNB_cap", "Date")
+colnames(polymath20) <- c("Polymath_price", "Polymath_cap", "Date")
+colnames(monero20) <- c("Monero_price", "Monero_cap", "Date")
+colnames(kucoin20) <- c("KuCoin_price", "KuCoin_cap", "Date")
+
+is.numeric(monero20$Monero_cap)
+
+# ??czenie tabel
+data = merge(bnb20, polymath20, by.x = "Date", by.y = "Date")
+data = merge(data, monero20, by.x = "Date", by.y = "Date")
+data = merge(data, kucoin20, by.x = "Date", by.y = "Date")
+
+#Przygotowane dane - przechodzimy do budowy portfela
+
+# total 
+data$total_cap = data$BNB_cap + data$Monero_cap + data$Polymath_cap + data$KuCoin_cap
+
+# udzia? procentowy
+data$BNB_p = (data$BNB_cap/data$total_cap)
+data$Polymath_p = (data$Polymath_cap/data$total_cap)
+data$Monero_p = (data$Monero_cap/data$total_cap)
+data$KuCoin_p = (data$KuCoin_cap/data$total_cap)
+
+
+# obliczanie logarytmicznych st?p zwrotu
+data$BNB_r = diff.xts(log(data$BNB_price))
+data$Polymath_r = diff.xts(log(data$Polymath_price))
+data$Monero_r = diff.xts(log(data$Monero_price))
+data$KuCoin_r = diff.xts(log(data$KuCoin_price))
+
+# stopy zwrotu z ca?ego portfela
+data$total_r = (data$BNB_p*data$BNB_r
+                +data$Polymath_p*data$Polymath_r
+                +data$Monero_p*data$Monero_r
+                +data$KuCoin_p*data$KuCoin_r)
+#-----------------------------------------------------------
+
+# Wykres udzialu w czasie
+share_xts = xts(data[, c("BNB_p", "Polymath_p", "Monero_p", "KuCoin_p")], order.by = as.Date(data$Date))
+dygraph(share_xts, main = "Profil portfelowy") %>%
+  dyRangeSelector(height = 50)
+
+# obiekty pomocnicze (dygraph musi mie? obiekt w formacie xts)
+close_xts = xts(data[, c("BNB_p", "Polymath_p", "Monero_p", "KuCoin_p")], order.by = as.Date(data$Date))
+tot_ret_xts = xts(data[, c("total_r")], order.by = as.Date(data$Date))
+
+dygraph(close_xts, main = 'Ceny zamkni?cia dla wszystkich kryptowalut') %>%
+  dyRangeSelector(height = 50)
+
+dygraph(tot_ret_xts, main="Stopy zwrot?w dla ca?ego portfela") %>% 
+  dyRangeSelector(height = 50)
+
+#-------------------------------------
+
+# Wykres ACF dla zwrotow z portfela
+acf(data$total_r, lag.max = 36, na.action = na.pass,
+    ylim = c(-0.3, 0.3), 
+    col = "darkblue", lwd = 7,
+    main = "Wykres ACF zwrot?w z portfela")
+
+#ACF sugeruje wyst?powanie zale?no?ci ?redniej ruchomej - istotne pierwsze 
+#op??nienie i stopniowe wygaszanie, warto to jednak potwierdzi? formalnym testem.
+
+durbinWatsonTest(lm(data$total_r ~ 1),
+                 max.lag = 5) # 5 pierwszych op??nie?
+
+# Wykresy ACF^2 dla zwrotow z portfela (efekty ARCH)
+acf(data$total_r^2, lag.max = 100, na.action = na.pass,
+    ylim = c(-0.3, 0.3),
+    col = "darkblue", lwd = 7,
+    main = "Wykres ACF kwadrat?w zwrot?w z portfela")
+
+# test ARCH
+ArchTest(data$total_r, lags = 5)
+
+#test durbin-Watson
+
+durbinWatsonTest(lm(data$total_r^2 ~ 1),
+                 max.lag = 5) # 5 pierwszych op??nie?
+
+hist(data$total_r, prob = T, breaks = 50, main = "Histogram rozk?adu zwrot?w portfela", xlab="returns", col="skyblue1")
+curve(dnorm(x, mean = mean(data$total_r, na.rm = T),
+            sd  = sd(data$total_r, na.rm = T)),
+      col = "darkblue", lwd = 2, add = TRUE,
+)
+
+#statystyki opisowe
+
+empstats <- basicStats(data$total_r)
+knitr::kable(as.matrix(empstats), digits = 2)
+
+#test na normlanosc reszt rozkladu
+
+jbtest <- jarque.bera.test(na.omit(data$total_r)) # brak stopy zwrotu przy pierwszej obserwacji
+jbtest
+
+#PRZYGOTOWANIE DO MODELOWANIA
+#podzia? proby na in sample i out of sample
+
+# in sample (314 obserwacji) - zroznicowana wariancja
+ins = data[which(data$Date < "2021-07-01"),]
+
+# out of sample (132 obserwacje) - zroznicowana wariancja
+outs = data[-which(data$Date < "2021-07-01"),]
+
+
+# wykresy zwrot?w in sample i out of sample
+plot(as.Date(ins$Date), ins$total_r, type = "l", col = "black", lwd = 2, main = "Zwroty z portfela in sample",
+     xlab = "Data", ylab = "Zwroty z portfela")
+
+plot(as.Date(outs$Date), outs$total_r, type = "l", col = "blue", lwd = 2, main = "Zwroty z portfela out of sample",
+     xlab = "Data", ylab = "Zwroty z portfela")
+
+# standaryzacja zwrotow i pierwszy kwantyl empiryczny in sample
+ins$total_r_std <- (ins$total_r - mean(ins$total_r, na.rm=T)) /
+  sd(ins$total_r, na.rm = T)
+
+total_r_std_q01 <- quantile(ins$total_r_std, 0.01, na.rm = T)
+total_r_std_q01
+
+qnorm(0.01, 0, 1)
+
+total_r_std_q01-qnorm(0.01, 0, 1)
+
+#------------------------------------------------------
+
+##############
+# GARCH(1,1) #
+##############
+
+spec <- ugarchspec(variance.model = list(model = "sGARCH",
+                                         garchOrder = c(1, 1)),
+                   mean.model = list(armaOrder = c(0, 0),
+                                     include.mean = T),
+                   distribution.model = "norm")
+
+ins.garch11 <- ugarchfit(spec = spec,
+                         data = na.omit(ins$total_r))
+
+####################
+# MA(1)-GARCH(1,1) #
+####################
+spec <- ugarchspec(variance.model = list(model = "sGARCH",
+                                         garchOrder = c(1, 1)),
+                   mean.model = list(armaOrder = c(0, 1),
+                                     include.mean = T),
+                   distribution.model = "norm")
+
+ins.garch11ma1 <- ugarchfit(spec = spec,
+                            data = na.omit(ins$total_r))
+########################
+# ARMA(1,1)-GARCH(1,1) #
+########################
+spec <- ugarchspec(variance.model = list(model = "sGARCH",
+                                         garchOrder = c(1, 1)),
+                   mean.model = list(armaOrder = c(1, 1),
+                                     include.mean = T),
+                   distribution.model = "norm")
+
+ins.garch11arma11 <- ugarchfit(spec = spec,
+                               data = na.omit(ins$total_r))
+###############################
+# ARMA(1,1)-GARCH(1,1) mu = 0 #
+###############################
+spec <- ugarchspec(variance.model = list(model = "sGARCH",
+                                         garchOrder = c(1, 1)),
+                   mean.model = list(armaOrder = c(1, 1),
+                                     include.mean = F),
+                   distribution.model = "norm")
+
+ins.garch11arma11mu0 <- ugarchfit(spec = spec,
+                                  data = na.omit(ins$total_r))
+############################
+# MA(1)-GARCH(1,1) mu = 0  #
+############################
+spec <- ugarchspec(variance.model = list(model = "sGARCH",
+                                         garchOrder = c(1, 1)),
+                   mean.model = list(armaOrder = c(0, 1),
+                                     include.mean = F),
+                   distribution.model = "norm")
+
+ins.garch11ma1mu0 <- ugarchfit(spec = spec,
+                               data = na.omit(ins$total_r))
+infocriteria(ins.garch11ma1mu0)
+
+compare.ICs1(c("ins.garch11","ins.garch11ma1","ins.garch11arma11","ins.garch11arma11mu0","ins.garch11ma1mu0"))
+
+ins.garch11ma1
+
+#plot
+
+plot(ins.garch11ma1, which = 11)
+
+plot(ins.garch11ma1, which = 10)
+
+#histogram
+
+hist(ins.garch11ma1@fit$residuals, prob = T, breaks = 50,
+     main = "Histogram reszt modelu MA(1)-GARCH(1,1)", xlab="residuals", col="skyblue1")
+curve(dnorm(x, mean = mean(ins.garch11ma1@fit$residuals, na.rm = T),
+            sd  = sd(ins.garch11ma1@fit$residuals, na.rm = T)),
+      col = "darkblue", lwd = 2, add = TRUE,
+)
+
+empstats <- basicStats(ins.garch11ma1@fit$residuals)
+knitr::kable(as.matrix(empstats), digits = 2)
+
+jbtest_residuals <- jarque.bera.test(ins.garch11ma1@fit$residuals)
+jbtest_residuals
+
+plot(plot(ins.garch11ma1@fit$residuals, type ="l", lwd = 2, main = "Reszty modelu MA(1)-GARCH(1,1)", ylab = "Reszty")@fit$residuals, type ="l", lwd = 2, main = "Reszty modelu MA(1)-GARCH(1,1)", ylab = "Reszty")
+
+###################
+# Model EGARCH
+###################
+
+# Poniżej estymacja modelu EGARCH(1,1).
+
+# wykorzystamy funkcję ugarchfit() z pakietu rugarch
+
+# na początek specyfikacja modelu
+spec = ugarchspec(
+  # równanie warunkowej wariancji
+  variance.model = list(model ="eGARCH",
+                        garchOrder = c(1, 1)),
+  # sGARCH oznacza standardowy model GARCH
+  # równanie warunkowej średniej
+  mean.model = list(armaOrder = c(0, 0), include.mean = F),
+  # zakładany rozkład warunkowy reszt
+  distribution.model = "norm")
+
+# funkcja nie akceptuje braków danych, więc musimy skorzystać
+# opcji na.omit()
+k.egarch11 <- ugarchfit( spec = spec,
+                         data = na.omit(ins$total_r))
+k.egarch11
+
+#WAZNE, ZEBY PATRZEC NA ALPHA1 - TO JEST GAMMA WE WZORZE
+#alpha0 to jest omega
+
+# współczynnik alpha1 wyjaśnia efekt znaku szoku (dodatni/ujemny)
+# zaś wpsółczynnik gamma wielkość szoku
+# patrz dokumentacja pakietu oraz:
+# http://cran.r-project.org/web/packages/rugarch/vignettes/Introduction_to_the_rugarch_package.pdf
+
+# alpha jest istotna, a zatem możemy mówić o asymetrii
+
+
+# 2.# Plot of conditional standard deviation estimates (3)
+# and News-Impact curve (12).
+# ESC to exit
+
+plot(k.egarch11)
+
+#12 wykres
+#po lewej zle wiesci, po prawej dobre wiesci, jesli widzimy asymetrie to mamy ta ASYMETRIE
+
+
+
+###############################################
+# Przykład #2
+# Model TGARCH
+###############################################
+
+# 1
+# specyfikacja modelu
+spec <- ugarchspec(
+  # równanie warunkowej wariancji
+  variance.model = list(model = "fGARCH",
+                        garchOrder = c(1, 1),
+                        submodel = "TGARCH"),
+  # model="fGARCH" (family GARCH) razem z submodel="TGARCH"
+  # równanie warunkowej średniej
+  mean.model = list(armaOrder = c(0, 0),
+                    include.mean = F),
+  # zakładany rozkład warunkowy reszt
+  distribution.model = "norm")
+
+# funkcja nie akceptuje braków danych, więc musimy skorzystać
+# z opcji na.omit()
+k.tgarch11 <- ugarchfit(spec = spec, data = na.omit(ins$total_r))
+k.tgarch11
+
+#W WYNIKU: eta11 - skoro jest istotny to ..... (to co chcemy)
+
+# 2.
+# Wykres krzywej napływu wiadomości
+# (News Impact curve)
+# wykres nr 12
+plot(k.tgarch11)
+
+# Jakie wnioski?
+# Czy możemy mówić o asymetrii reakcji funkcji warunowej wariancji
+# na wiadomości napływające na rynek?
+
+#obserwujemy asymetryczna wariancje - po wykresie 12 widzimy 
+
+
+###########################
+# Przykład #3
+# Model GARCH-in-Mean
+###########################
+
+# 1
+# specyfikacja modelu
+spec <- ugarchspec(
+  # równanie warunkowej wariancji
+  variance.model = list(model = "sGARCH", #sGARCH - grupa modeli standardowych
+                        garchOrder = c(1, 1)),
+  # równanie warunkowej średniej - dołączamy do równania wyraz wolny
+  mean.model = list(armaOrder = c(0, 0),
+                    include.mean = T, #jak chcemy usunac stala to F 
+                    # dodajemy jeden element do równania warunkowej średniej,
+                    # może to być odch. standardowe (pow=1) lub wariancja (pow=2)
+                    archm = T, archpow = 1), #jak chcemy usunac stala to F
+  # zakładany rozkład warunkowy reszt
+  distribution.model = "norm")
+
+# funkcja nie akceptuje braków danych, więc musimy skorzystać
+# z opcji na.omit()
+k.garchm11 <- ugarchfit(spec = spec,
+                        data = na.omit(ins$total_r))
+k.garchm11
+
+# Czy parametr przy premii za ryzyko jest istonie dodatni?
+
+# ten parametr to archm
+#archm   Pr(>|t|)  0.070484
+# na poziomie 10% wyst?puje 
+####################
+# Przykład #4
+# Model GARCH-t
+####################
+
+# 1.
+# Sprawdźmy czy warunkowy rozkład reszt
+# może być lepiej opisany przez
+# rozkład t-Studenta
+
+# specyfikacja modelu
+spec <- ugarchspec(
+  # równanie warunkowej wariancji
+  variance.model = list(model = "sGARCH",
+                        garchOrder = c(1, 1)),
+  # równanie warunkowej wartości oczekiwanej
+  mean.model = list(armaOrder = c(0, 0),
+                    include.mean = F),
+  # zakładany rozkład warunkowy reszt
+  distribution.model = "std") # rozkład t-Studenta !!!!
+
+
+k.garcht11 <- ugarchfit(spec=spec, data=na.omit(ins$total_r))
+k.garcht11
+
+#por?wnanie
+
+compare.ICs1(c("k.egarch11", "k.tgarch11", "k.garchm11", "k.garcht11"))
+
+
+###################################################################
+
+
+# GARCH-t(1,1) #
+###############
+spec <- ugarchspec(variance.model = list(model = "sGARCH",
+                                         garchOrder = c(1, 1)),
+                   mean.model = list(armaOrder = c(0, 0),
+                                     include.mean = T),
+                   distribution.model = "std")
+
+ins.garcht11 <- ugarchfit(spec = spec,
+                          data = na.omit(ins$total_r))
+#####################
+# MA(1)-GARCH-t(1,1) #
+#####################
+spec <- ugarchspec(variance.model = list(model = "sGARCH",
+                                         garchOrder = c(1, 1)),
+                   mean.model = list(armaOrder = c(0, 1),
+                                     include.mean = T),
+                   distribution.model = "std")
+
+ins.garcht11ma1 <- ugarchfit(spec = spec,
+                             data = na.omit(ins$total_r))
+##########################
+# MA(1)-GARCH-t(1,1) mu=0 #
+##########################
+spec <- ugarchspec(variance.model = list(model = "sGARCH",
+                                         garchOrder = c(1, 1)),
+                   mean.model = list(armaOrder = c(0, 1),
+                                     include.mean = F),
+                   distribution.model = "std")
+
+ins.garcht11ma1mu0 <- ugarchfit(spec = spec,
+                                data = na.omit(ins$total_r))
+#########################
+# ARMA(1,1)-GARCH-t(1,1) #
+#########################
+spec <- ugarchspec(variance.model = list(model = "sGARCH",
+                                         garchOrder = c(1, 1)),
+                   mean.model = list(armaOrder = c(1, 1),
+                                     include.mean = T),
+                   distribution.model = "std")
+
+ins.garcht11arma11 <- ugarchfit(spec = spec,
+                                data = na.omit(ins$total_r))
+################################
+# ARMA(1,1)-GARCH-t(1,1) mu = 0 #
+################################
+spec <- ugarchspec(variance.model = list(model = "sGARCH",
+                                         garchOrder = c(1, 1)),
+                   mean.model = list(armaOrder = c(1, 1),
+                                     include.mean = F),
+                   distribution.model = "std")
+
+ins.garcht11arma11mu0 <- ugarchfit(spec = spec,
+                                   data = na.omit(ins$total_r))
+
+#por?wananie specyfikacji GARCH-t(1,1)
+compare.ICs1(c("ins.garcht11","ins.garcht11ma1","ins.garcht11arma11","ins.garcht11arma11mu0","ins.garcht11ma1mu0"))
+
+hist(ins.garcht11ma1@fit$residuals, prob = T, breaks = 50,
+     main = "Histogram reszt modelu MA(1)-GARCH(1,1)", xlab="residuals", col="skyblue1")
+curve(dnorm(x, mean = mean(ins.garcht11ma1@fit$residuals, na.rm = T),
+            sd  = sd(ins.garcht11ma1@fit$residuals, na.rm = T)),
+      col = "darkblue", lwd = 2, add = TRUE,
+)
+
+empstats <- basicStats(ins.garcht11ma1@fit$residuals)
+knitr::kable(as.matrix(empstats), digits = 2)
+
+plot(ins.garcht11ma1@fit$residuals, type ="l", 
+     lwd=2, ylab = "Reszty", main = "Reszty modelu MA(1)-tGARCH(1,1)")
+
+library('readr')
+
+#VaR
+
+#MA(1)-GARCH(1,1)
+
+forecast_garch11ma1 <-ugarchforecast(ins.garch11ma1, n.ahead = 1)
+forecast2_garch11ma1 <- forecast_garch11ma1@forecast$sigmaFor[1,1]
+VaR_garch11ma1 <- total_r_std_q01*forecast2_garch11ma1
+VaR_garch11ma1
+
+#MA(1)-GARCH-t(1,1)
+
+forecast_garcht11ma1 <-ugarchforecast(ins.garcht11ma1, n.ahead = 1)
+forecast2_garcht11ma1 <- forecast_garcht11ma1@forecast$sigmaFor[1,1]
+VaR_garcht11ma1 <- total_r_std_q01*forecast2_garcht11ma1
+VaR_garcht11ma1
+
+# dodanie numeru obserwacji
+data$obs = 1:length(data$total_r)
+
+start <- data$obs[data$Date == as.Date("2021-07-01")] # pierwszy dzien oos
+stop <- data$obs[data$Date == as.Date("2022-06-17")] # ostatni dzien oos
+data2 <- data[start:stop, ] # df do zapisywania VaR
+VaR.garch <- rep(NA, times = stop-start+1) # wektor VaR dla modelu MA(1)-GARCH(1,1)
+VaR.garcht <- rep(NA, times = stop-start+1) # wektor VaR dla modelu MA(1)-GARCH-t(1,1)
+
+time1 = Sys.time()
+for(k in start:stop){
+  # generowanie zbioru danych zawierajacego obserwacje do dnia przed dniem prognozny
+  # (prognozy jednodniowe) => powiekszanie proby o jeden dzien z kazda iteracja
+  tmp.data <- data[data$obs <= (k-1), ] 
+  # reszty standaryzowane
+  tmp.data$rstd <- (tmp.data$total_r-mean(tmp.data$total_r, na.rm = T))/sd(tmp.data$total_r, na.rm = T)
+  # pierwszy kwantyl empiryczny
+  q01 <- quantile(tmp.data$rstd, 0.01, na.rm = T)
+  # specyfikacja modelu MA(1)-GARCH(1,1)
+  spec.garch <- ugarchspec(variance.model = list(model = "sGARCH",
+                                                 garchOrder = c(1, 1)),
+                           mean.model = list(armaOrder = c(0, 1),
+                                             include.mean = T),
+                           distribution.model = "norm")
+  # specyfikacja modelu MA(1)-GARCH-t(1,1)
+  spec.garcht <- ugarchspec(variance.model = list(model = "sGARCH",
+                                                  garchOrder = c(1, 1)),
+                            mean.model = list(armaOrder = c(0, 1),
+                                              include.mean = T),
+                            distribution.model = "std")
+  # estymacja modelu (zwroty z portfela z bazy tmp)
+  # GARCH
+  tmp.garch11ma1 <- ugarchfit(spec = spec.garch, data = na.omit(tmp.data$total_r))
+  # GARCH-t
+  tmp.garcht11ma1 <- ugarchfit(spec = spec.garcht, data = na.omit(tmp.data$total_r))
+  # jednodniowa predykcja wariancji
+  # GARCH
+  sigma_forecast.garch <- ugarchforecast(tmp.garch11ma1, n.ahead = 1)
+  # GARCH-t
+  sigma_forecast.garcht <- ugarchforecast(tmp.garcht11ma1, n.ahead = 1)
+  # technikalia - zapis wartosci predykcji wariancji jako numeric
+  # GARCH
+  sigma_forecast2.garch <- sigma_forecast.garch@forecast$sigmaFor[1,1]
+  # GARCH-t
+  sigma_forecast2.garcht <- sigma_forecast.garcht@forecast$sigmaFor[1,1]
+  # obliczenie i zapis VaR do wektora (k = <start; stop>)
+  # GARCH
+  VaR.garch[k-start+1] <- q01*sigma_forecast2.garch
+  # GARCH-t
+  VaR.garcht[k-start+1] <- q01*sigma_forecast2.garcht
+}
+time2 = Sys.time()
+# czas obliczen
+print(time2 - time1)
+# dodanie kolumny VaR
+data2$VaR.garch <- VaR.garch
+data2$VaR.garcht <- VaR.garcht
+
+plot(as.Date(data2$Date), data2$total_r, col = "darkblue", lwd = 2, type = 'l', ylab = "zwroty/VaR", xlab = "Data",
+     main = "Oszacowania 1% Value at Risk")
+abline(h = 0, lty = 2)
+lines(as.Date(data2$Date), data2$VaR.garch, lwd = 2, type = 'l', col = "darkgreen")
+lines(as.Date(data2$Date), data2$VaR.garcht, lwd = 2, type = 'l', col = "darkred")
+legend("topleft", c("Returns out of sample", "VaR MA(1)-GARCH(1,1)", "VaR MA(1)-GARCH-t(1,1)"), 
+       text.col=c('darkblue', 'darkgreen', 'darkred'), cex = 0.75)
+
+#   VaR MA(1)-GARCH(1,1)
+sum(data2$total_r < data2$VaR.garch) / length(data2$VaR.garch)
+
+#   VaR MA(1)-GARCH-t(1,1)
+sum(data2$total_r < data2$VaR.garcht) / length(data2$VaR.garcht)
